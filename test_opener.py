@@ -17,7 +17,7 @@ class StandaloneOpener(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="rex opener's ")
         self.addCleanup(self.temporary.cleanup)
         self.package = Path(self.temporary.name) / "plugin"
-        shutil.copytree(PACKAGE, self.package, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(PACKAGE, self.package, ignore=shutil.ignore_patterns("__pycache__", ".git"))
         helper = self.package / "opener.py"
         self.assertTrue(helper.is_file(), "The exported plugin must contain its own opener")
         spec = importlib.util.spec_from_file_location("rex_opener", helper)
@@ -37,6 +37,60 @@ class StandaloneOpener(unittest.TestCase):
         rex.call.side_effect = [{"content": "é", "id": 12, "eof": False}, {"data": " next", "eof": True}]
         self.assertEqual(self.opener.capture_text(rex, "s", "b"), "é next")
         self.assertEqual(rex.call.call_args.kwargs["args"]["offset"], 2)
+
+    def test_url_permutations_preserve_the_complete_target(self):
+        cases = {
+            "https://example.com/a?q=x&y=[1]": ["https://example.com/a?q=x&y=[1]"],
+            "https://example.com/'single'": ["https://example.com/'single'"],
+            "(https://example.com/a_(b)).": ["https://example.com/a_(b)"],
+            "[docs](https://docs.rs/serde/latest/)": ["https://docs.rs/serde/latest/"],
+            "https://a.com/x,https://b.com/y": ["https://b.com/y", "https://a.com/x"],
+            "foo.ai baz.xyz qux.tech x.gg x.so x.cloud": [
+                "https://" + x for x in ("x.cloud", "x.so", "x.gg", "qux.tech", "baz.xyz", "foo.ai")
+            ],
+            "ftp://example.com/x": ["ftp://example.com/x"],
+            "a@example.com missing.py missing.rs missing.md missing.sh": [],
+            "HTTP://localhost:3000/a%20b#frag": ["HTTP://localhost:3000/a%20b#frag"],
+            "<https://example.com/x>": ["https://example.com/x"],
+            "'https://example.com/x'": ["https://example.com/x"],
+            '"https://example.com/x"': ["https://example.com/x"],
+            "`https://example.com/x`": ["https://example.com/x"],
+            "http://127.0.0.1:8080/x?y=1": ["http://127.0.0.1:8080/x?y=1"],
+            "https://[::1]:8080/x": ["https://[::1]:8080/x"],
+            "https://user:pw@host.example.com/p": ["https://user:pw@host.example.com/p"],
+            "https://xn--bcher-kva.example/": ["https://xn--bcher-kva.example/"],
+            "www.example.com/help": ["https://www.example.com/help"],
+            "ssh://example.com/a": [],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual([row[1] for row in self.opener.text_targets(text, self.package)], expected)
+
+    def test_existing_file_url_quoted_space_path_and_directory(self):
+        target = self.package / "space file.py"
+        target.touch()
+        folder = self.package / "folder"
+        folder.mkdir()
+        for text, kind, path, line in (
+            (target.as_uri(), "text", target, ""),
+            ('"space file.py:12:3"', "text", target, "12"),
+            ("*** Update File: space file.py", "text", target, ""),
+            ("space file.py:12:3", "text", target, "12"),
+            ("folder/", "dir", folder, ""),
+        ):
+            with self.subTest(text=text):
+                rows = self.opener.text_targets(text, self.package)
+                self.assertEqual([(row[0], row[1], row[3]) for row in rows], [(kind, str(path.resolve()), line)])
+
+    def test_oversized_non_path_does_not_hide_later_urls(self):
+        rows = self.opener.text_targets("x" * 4096 + "\nhttps://example.com", self.package)
+        self.assertEqual([row[1] for row in rows], ["https://example.com"])
+
+    def test_latest_occurrence_wins_across_urls_and_files(self):
+        target = self.package / "file.py"
+        target.touch()
+        rows = self.opener.text_targets("https://a.com\nfile.py:17:2\nhttps://b.com\nhttps://a.com", self.package)
+        self.assertEqual([row[1] for row in rows], ["https://a.com", "https://b.com", str(target.resolve())])
 
     def test_capture_rejects_a_stalled_blob(self):
         rex = Mock()
@@ -96,22 +150,72 @@ class StandaloneOpener(unittest.TestCase):
         self.assertFalse(rex.call.call_args_list[1].kwargs["focus"])
         rex.action.assert_not_called()
 
-    def test_shared_picker_cleans_up_private_session_even_when_select_fails(self):
+    def test_picker_cleans_up_its_layer_even_when_select_fails(self):
         rex = Mock()
         rex.call.side_effect = [
             {"block": {"window_id": "w"}},
-            {"clients": [{"client_id": "peer", "info": {"kind": "app"}, "session_ids": ["s"]}]},
-            {"session_id": "private"},
-            {"window_id": "private-window", "block_ids": ["picker"]},
-            {"clients": []},
+            {"windows": [{"window_id": "w"}]},
+            {"layer_id": "picker-layer", "block_ids": ["picker"]},
             {},
         ]
         rex.action.side_effect = RuntimeError("client closed")
-        with patch.object(self.opener, "layout", return_value={"block": {"options": {}}}):
+        with (
+            patch.object(self.opener, "layout", return_value={"block": {"options": {}}}),
+            patch.object(self.opener, "foreground_program", return_value=(123, "fish")),
+        ):
             with self.assertRaisesRegex(RuntimeError, "client closed"):
                 self.opener.popup(rex, "s", "b", "c", self.package, "fzf")
-        rex.call.assert_called_with("session.destroy", session_id="private")
-        self.assertFalse(any(call.args[0] == "session.new_layer" for call in rex.call.call_args_list))
+        rex.call.assert_called_with("session.close_layer", session_id="s", layer_id="picker-layer")
+        self.assertFalse(
+            any(
+                call.args[0] in ("session.create", "session.new_window", "session.destroy")
+                for call in rex.call.call_args_list
+            )
+        )
+
+    def test_manual_close_is_cancellation_and_restores_zoom_only_in_source_tab(self):
+        for moved in (False, True):
+            with self.subTest(moved=moved):
+                source = {
+                    "window_id": "w",
+                    "focused_block_id": "b",
+                    "zoomed_block_id": "b",
+                    "layers": [{"blocks": [{"block_id": "b"}]}],
+                }
+                rex = Mock()
+
+                def call(method, **args):
+                    if method == "session.describe_block":
+                        return {"block": {"window_id": "w"}}
+                    if method == "session.view":
+                        return {"active_window_id": "other" if moved else "w", "windows": [source]}
+                    if method == "session.new_layer":
+                        return {"layer_id": "picker-layer", "block_ids": ["picker"]}
+                    if method in ("com.superlogical.terminal.process", "session.close_layer"):
+                        raise RuntimeError("not found")
+                    return {}
+
+                rex.call.side_effect = call
+                with patch.object(self.opener, "foreground_program", return_value=(123, "fish")):
+                    self.assertEqual(self.opener.popup(rex, "s", "b", "c", self.package, "fzf"), 130)
+                self.assertEqual(any(c.args[0] == "session.zoom_block" for c in rex.call.call_args_list), not moved)
+
+    def test_another_app_attachment_does_not_move_the_picker_out_of_neovim(self):
+        rex = Mock()
+        rex.call.return_value = {
+            "block": {"window_id": "w"},
+            "clients": [{"client_id": "peer", "info": {"kind": "app"}, "session_ids": ["s"]}],
+        }
+        target = {"socket": "/tmp/owned.sock"}
+        with (
+            patch.object(self.opener, "foreground_program", return_value=(123, "nvim")),
+            patch.object(self.opener, "neovim_target", return_value=target),
+            patch.object(self.opener, "popup_neovim", return_value=130) as popup,
+        ):
+            self.assertEqual(self.opener.popup(rex, "s", "b", "c", self.package, "fzf"), 130)
+        popup.assert_called_once_with(target, self.package, "fzf")
+        self.assertEqual(rex.call.call_count, 1)
+        rex.action.assert_not_called()
 
     def test_detached_failure_is_displayed_in_invoking_client(self):
         with (
@@ -145,7 +249,7 @@ assert(bindings["cmd+shift+o"] == "rex_opener_open")
 assert(not pcall(action.run, {}), "Must require an exact terminal")
 action.run({session_id="session:one", block_id="block:one", client_id="client:one"})
 assert(launched.opts.detach and launched.opts.env.PATH == "/custom/bin")
-assert(launched.opts.env.TMUX == false)
+assert(launched.opts.env.NVIM == false)
 assert(launched.argv[1] == "python3")
 assert(launched.argv[2] == arg[1]:gsub("init.lua$", "opener.py"))
 assert(launched.argv[3] == "--session" and launched.argv[4] == "session:one")

@@ -19,7 +19,7 @@ return function(options)
         argv[#argv + 1] = ctx.client_id
       end
       local process, err = rex.exec.start(argv, { detach = true, env = {
-        PATH = options.path, TMUX = false, TMUX_PANE = false, NVIM = false, OPENCODE_NVIM_GENERATION = false,
+        PATH = options.path, NVIM = false, OPENCODE_NVIM_GENERATION = false,
       } })
       assert(process, err)
       return true

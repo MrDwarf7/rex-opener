@@ -27,13 +27,17 @@ source readable; the demo uses the real opener with automated input.
 
 One detected target opens immediately. With multiple targets, an fzf picker lets
 you search and choose; press **Enter** to open or **Escape** to cancel. The parser
-handles Markdown links, paths containing spaces, and surrounding punctuation.
+handles Markdown links, quoted paths containing spaces, and surrounding punctuation.
+Targets appear newest first; repeated targets keep their latest position.
+Explicit HTTP, HTTPS and FTP URLs keep their scheme, query and fragment.
+Bare domains use a curated suffix list, including `.ai`, `.xyz` and `.cloud`;
+file-like suffixes such as `.py`, `.md`, `.rs` and `.sh` require an explicit URL scheme.
 
 ## Requirements
 
 - **macOS with a local Rex server.** Tested with Rex CLI
-  `0.0.1792787366-g623b2d`; Beta APIs may change.
-- **Python 3.10+, Bash, Perl, Fish, and fzf.** No Python packages or plugin manager
+  `0.0.1793420730-g6d0d9a`; Beta APIs may change.
+- **Python 3.10+, Fish, and fzf.** No Python packages or plugin manager
   are needed.
 - **Neovim** for text files and editor-hosted pickers; **Yazi** for directories.
   IINA is optional.
@@ -121,8 +125,10 @@ terminal must report a usable working directory.
 - Text targets open in a new editor split. Only the line number, not the column,
   is passed to Neovim.
 - Pickers use the invoking Neovim's floating terminal when possible, otherwise a
-  Rex layer. A session shared with another app uses a temporary private picker
-  session to avoid redirecting that app.
+  native Rex layer in the invoking tab. Apps viewing the same session can see it.
+  Closing the picker restores source focus and zoom if its tab is still active.
+- Only URLs present as text are detected. A hyperlink whose URL is hidden behind
+  a display label is not available through the plain-text capture.
 
 ## Development
 

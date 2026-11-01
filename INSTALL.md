@@ -1,15 +1,15 @@
 # Installing Rex opener
 
 Open URLs and local files found in a Rex terminal's output. No dotfiles checkout,
-tmux, Python packages or plugin manager is required.
+Python packages or plugin manager is required.
 
 For a quick start, supported targets and troubleshooting, see [README.md](README.md).
 
 ## Requirements
 
 - macOS and a local Rex server. Tested with bundled CLI
-  `0.0.1792787366-g623b2d`; Rex Beta APIs can change.
-- Python 3.10+, Bash, Perl and standard macOS command-line utilities.
+  `0.0.1793420730-g6d0d9a`; Rex Beta APIs can change.
+- Python 3.10+ and standard macOS command-line utilities.
 - Fish and fzf for pickers; Neovim for text files; Yazi for directories.
 - Rex CLI on the server's `PATH`, or `REX_BIN_DIR` pointing to its directory.
 - Enable **Settings → Rex Server → Remote Control** for targeted app focus.
@@ -66,8 +66,9 @@ when the `init.lua` entry itself has not changed.
 - Directories open in Yazi; videos prefer IINA when installed; URLs and other
   files use macOS `open` and the default application.
 - Pickers use the invoking Neovim's floating terminal when available, otherwise
-  a Rex layer. When another app shares the session, a temporary private session
-  holds the picker. Editor splits do not redirect another app's focus.
+  a native Rex layer in the invoking tab. Other apps viewing that session can see
+  the picker. Editor splits do not redirect another app's focus.
+- Targets are ordered newest first, keeping the latest occurrence of duplicates.
 
 Targets come from terminal output; select only URLs and files you intend to
 open. Remote-server panes and other users' terminals are rejected. The plugin
